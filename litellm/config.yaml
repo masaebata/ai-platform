@@ -1,4 +1,8 @@
-model_list: []
+model_list:
+  - model_name: local-general
+    litellm_params:
+      model: ollama/qwen3:4b
+      api_base: http://192.168.11.129:11434
  
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
