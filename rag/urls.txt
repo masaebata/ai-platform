@@ -1,6 +1,11 @@
 # Palo Alto Networks RAG Sources
 # # で始まる行は無視されます。
  
-https://docs.paloaltonetworks.com/xxxxxxxx
-https://docs.paloaltonetworks.com/xxxxxxxx/xxxxxxxx.pdf
-https://knowledgebase.paloaltonetworks.com/xxxxxxxx
+# PAN-OS / NGFW
+https://docs.paloaltonetworks.com/ngfw
+ 
+# XML API
+https://docs.paloaltonetworks.com/ngfw/api
+ 
+# VM-Series
+https://docs.paloaltonetworks.com/vm-series
