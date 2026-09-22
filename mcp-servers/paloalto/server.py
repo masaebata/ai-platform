@@ -16,11 +16,13 @@ async def get_device_info() -> dict:
  
     Read-only operation.
     """
- 
     client = PanOSClient()
- 
     return await client.get_device_info()
  
  
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        port=8000,
+    )
