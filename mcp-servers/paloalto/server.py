@@ -59,10 +59,11 @@ async def get_routes() -> dict:
 @mcp.tool
 async def get_security_rules() -> dict:
     """
-    Get configured Security Policy rules from the
-    configured Palo Alto Networks firewall.
+    Get configured Security Policy rules.
  
-    Uses the PAN-OS XML Configuration API.
+    Returns a normalized list including:
+    name, zones, source, destination,
+    application, service, action and logging settings.
  
     Read-only operation.
     """
@@ -70,6 +71,35 @@ async def get_security_rules() -> dict:
     client = PanOSClient()
  
     return await client.get_security_rules()
+ 
+ 
+@mcp.tool
+async def get_threat_logs(
+    nlogs: int = 20,
+    query: str | None = None,
+) -> dict:
+    """
+    Get recent PAN-OS Threat Logs.
+ 
+    Args:
+        nlogs:
+            Number of logs to retrieve.
+            Default is 20.
+ 
+        query:
+            Optional PAN-OS log query.
+            Example:
+            (severity eq high)
+ 
+    Read-only operation.
+    """
+ 
+    client = PanOSClient()
+ 
+    return await client.get_threat_logs(
+        nlogs=nlogs,
+        query=query,
+    )
  
  
 if __name__ == "__main__":

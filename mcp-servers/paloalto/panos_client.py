@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any
  
@@ -126,9 +127,7 @@ class PanOSClient:
 </show>
         """
  
-        result = await self.op(
-            cmd
-        )
+        result = await self.op(cmd)
  
         system = result.get(
             "system",
@@ -160,9 +159,7 @@ class PanOSClient:
 </show>
         """
  
-        return await self.op(
-            cmd
-        )
+        return await self.op(cmd)
  
     async def get_routes(
         self,
@@ -176,9 +173,7 @@ class PanOSClient:
 </show>
         """
  
-        return await self.op(
-            cmd
-        )
+        return await self.op(cmd)
  
     async def get_security_rules(
         self,
@@ -190,11 +185,169 @@ class PanOSClient:
             "/rulebase/security/rules"
         )
  
-        result = await self.config_show(
-            xpath
+        result = await self.config_show(xpath)
+ 
+        rules = (
+            result
+            .get("rules", {})
+            .get("entry", [])
         )
+ 
+        if isinstance(rules, dict):
+            rules = [rules]
+ 
+        normalized_rules = []
+ 
+        for rule in rules:
+            normalized_rules.append(
+                {
+                    "name": rule.get("@name"),
+                    "from": (
+                        rule.get("from", {})
+                        .get("member", [])
+                    ),
+                    "to": (
+                        rule.get("to", {})
+                        .get("member", [])
+                    ),
+                    "source": (
+                        rule.get("source", {})
+                        .get("member", [])
+                    ),
+                    "destination": (
+                        rule.get("destination", {})
+                        .get("member", [])
+                    ),
+                    "application": (
+                        rule.get("application", {})
+                        .get("member", [])
+                    ),
+                    "service": (
+                        rule.get("service", {})
+                        .get("member", [])
+                    ),
+                    "action": rule.get("action"),
+                    "log_start": rule.get("log-start"),
+                    "log_end": rule.get("log-end"),
+                    "disabled": rule.get("disabled"),
+                    "description": rule.get("description"),
+                }
+            )
  
         return {
             "vsys": self.vsys,
-            "rules": result,
+            "count": len(normalized_rules),
+            "rules": normalized_rules,
         }
+ 
+    async def get_threat_logs(
+        self,
+        nlogs: int = 20,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+ 
+        params = {
+            "log-type": "threat",
+            "nlogs": str(nlogs),
+            "dir": "backward",
+        }
+ 
+        if query:
+            params["query"] = query
+ 
+        initial = await self._request(
+            "log",
+            **params,
+        )
+ 
+        result = initial.get(
+            "result",
+            {},
+        )
+ 
+        job_id = result.get("job")
+ 
+        if not job_id:
+            raise RuntimeError(
+                "PAN-OS Threat Log job ID was not returned"
+            )
+ 
+        for _ in range(30):
+ 
+            await asyncio.sleep(2)
+ 
+            response = await self._request(
+                "log",
+                action="get",
+                **{
+                    "job-id": str(job_id)
+                },
+            )
+ 
+            result = response.get(
+                "result",
+                {},
+            )
+ 
+            job = result.get(
+                "job",
+                {},
+            )
+ 
+            status = None
+ 
+            if isinstance(job, dict):
+                status = job.get("status")
+ 
+            log_node = result.get("log")
+ 
+            if log_node:
+                logs = (
+                    log_node
+                    .get("logs", {})
+                    .get("entry", [])
+                )
+ 
+                if isinstance(logs, dict):
+                    logs = [logs]
+ 
+                normalized_logs = []
+ 
+                for entry in logs:
+                    normalized_logs.append(
+                        {
+                            "receive_time": entry.get(
+                                "receive_time"
+                            ),
+                            "src": entry.get("src"),
+                            "dst": entry.get("dst"),
+                            "rule": entry.get("rule"),
+                            "application": entry.get("app"),
+                            "source_zone": entry.get("from"),
+                            "destination_zone": entry.get("to"),
+                            "source_port": entry.get("sport"),
+                            "destination_port": entry.get("dport"),
+                            "protocol": entry.get("proto"),
+                            "action": entry.get("action"),
+                            "severity": entry.get("severity"),
+                            "subtype": entry.get("subtype"),
+                            "threat_id": entry.get("threatid"),
+                            "category": entry.get("category"),
+                            "url_filename": entry.get("url"),
+                        }
+                    )
+ 
+                return {
+                    "count": len(normalized_logs),
+                    "logs": normalized_logs,
+                }
+ 
+            if status == "FIN":
+                return {
+                    "count": 0,
+                    "logs": [],
+                }
+ 
+        raise TimeoutError(
+            "Timed out waiting for PAN-OS Threat Log job"
+        )
