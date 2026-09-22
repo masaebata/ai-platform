@@ -1,0 +1,6 @@
+# Palo Alto Networks TechDocs crawler seeds
+ 
+https://docs.paloaltonetworks.com/ngfw
+https://docs.paloaltonetworks.com/vm-series
+Next-Generation Firewall
+ 

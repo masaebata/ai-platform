@@ -1,0 +1,50 @@
+name: Crawl Palo Alto TechDocs
+ 
+on:
+  workflow_dispatch:
+ 
+  schedule:
+    # 毎週日曜日 03:00 JST
+    # GitHub Actions cronはUTC
+    - cron: "0 18 * * 6"
+ 
+ 
+concurrency:
+  group: paloalto-techdocs-crawl
+  cancel-in-progress: false
+ 
+ 
+jobs:
+ 
+  crawl:
+ 
+    runs-on: self-hosted
+ 
+    steps:
+ 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+ 
+ 
+      - name: Validate Docker Compose
+        run: |
+          docker compose \
+            --env-file /etc/ai-platform/.env \
+            config
+ 
+ 
+      - name: Crawl TechDocs and update Qdrant
+        run: |
+          docker compose \
+            --env-file /etc/ai-platform/.env \
+            --profile crawl \
+            run \
+            --rm \
+            --build \
+            rag-crawler
+ 
+ 
+      - name: Show Qdrant collection
+        run: |
+          curl -f \
+http://127.0.0.1:6333/collections/paloalto-docs

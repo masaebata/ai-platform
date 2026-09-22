@@ -8,7 +8,9 @@ RUN pip install --no-cache-dir -r requirements.txt
  
 COPY common.py .
 COPY ingest.py .
+COPY crawler.py .
 COPY server.py .
 COPY urls.txt .
+COPY seeds.txt .
  
 CMD ["python", "server.py"]

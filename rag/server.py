@@ -8,7 +8,7 @@ from common import (
  
  
 mcp = FastMCP(
-    name="Documentation RAG MCP"
+    name="Palo Alto Documentation RAG MCP"
 )
  
  
@@ -18,27 +18,12 @@ async def search_paloalto_docs(
     limit: int = 5,
 ) -> dict:
     """
-    Search documentation stored in the
-    local Qdrant RAG database.
+    Search Palo Alto Networks TechDocs
+    stored in the local Qdrant database.
  
-    Use this tool for:
-    - Palo Alto Networks documentation
-    - PAN-OS configuration guidance
-    - recommended configuration
-    - technical specifications
-    - implementation guidance
-    - configuration meaning
-    - troubleshooting documentation
- 
-    Args:
- 
-        query:
-            Natural language search query.
- 
-        limit:
-            Maximum number of results.
-            Default is 5.
-            Maximum is 10.
+    Use this tool for product documentation,
+    configuration guidance, technical references,
+    best practices and implementation questions.
  
     Read-only operation.
     """
@@ -49,7 +34,9 @@ async def search_paloalto_docs(
     if limit > 10:
         limit = 10
  
-    client = get_qdrant_client()
+    client = (
+        get_qdrant_client()
+    )
  
     if not client.collection_exists(
         QDRANT_COLLECTION
@@ -58,10 +45,8 @@ async def search_paloalto_docs(
         return {
             "count": 0,
             "results": [],
-            "message": (
-                "RAG collection does "
-                "not exist."
-            ),
+            "message":
+                "RAG collection does not exist.",
         }
  
     vector = embed_query(
@@ -123,7 +108,9 @@ async def search_paloalto_docs(
  
     return {
         "query": query,
-        "count": len(results),
+        "count": len(
+            results
+        ),
         "results": results,
     }
  

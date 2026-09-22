@@ -115,22 +115,29 @@ services:
           - rag-mcp
  
  
-  rag-ingest:
+  rag-crawler:
     build:
       context: ./rag
  
-    container_name: ai-rag-ingest
+    container_name: ai-rag-crawler
  
     command:
       - python
-      - ingest.py
+      - crawler.py
  
     environment:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: paloalto-docs
       EMBEDDING_MODEL: intfloat/multilingual-e5-small
  
-      URL_LIST: /app/urls.txt
+      CRAWL_SEED_FILE: /app/seeds.txt
+      CRAWL_STATE_FILE: /state/crawl_state.json
+      CRAWL_ALLOWED_DOMAIN: docs.paloaltonetworks.com
+ 
+      CRAWL_MAX_DEPTH: 3
+      CRAWL_MAX_PAGES: 300
+      CRAWL_DELAY: 1.0
+      CRAWL_RESPECT_ROBOTS: "true"
  
       RAG_CHUNK_SIZE: 800
       RAG_CHUNK_OVERLAP: 120
@@ -140,8 +147,9 @@ services:
       HF_HOME: /models/huggingface
  
     volumes:
-      - ./rag/urls.txt:/app/urls.txt:ro
+      - ./rag/seeds.txt:/app/seeds.txt:ro
       - rag-model-cache:/models/huggingface
+      - rag-crawl-state:/state
  
     depends_on:
       - qdrant
@@ -150,7 +158,7 @@ services:
       - ai-network
  
     profiles:
-      - ingest
+      - crawl
  
  
   ai-agent:
@@ -167,7 +175,6 @@ services:
       OLLAMA_BASE_URL: http://192.168.11.129:11434/v1
       OLLAMA_MODEL: qwen3:4b
  
-      AGENT_MODEL_ID: paloalto-agent
       AGENT_API_KEY: ${AGENT_API_KEY}
       AGENT_TIMEOUT: ${AGENT_TIMEOUT:-600}
  
@@ -246,3 +253,4 @@ volumes:
   qdrant-data:
   open-webui-data:
   rag-model-cache:
+  rag-crawl-state:

@@ -1,7 +1,14 @@
 fastmcp
+
 qdrant-client
+
 sentence-transformers
+
 pypdf
+
 httpx
+
 beautifulsoup4
+
 lxml
+ 

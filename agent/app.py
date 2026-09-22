@@ -4,16 +4,34 @@ import logging
 import os
 import time
 import uuid
+ 
 from contextlib import asynccontextmanager
 from typing import Any
  
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+)
+ 
+from fastapi.responses import (
+    StreamingResponse,
+)
+ 
 from pydantic import BaseModel
  
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.agents import (
+    create_agent,
+)
+ 
+from langchain_openai import (
+    ChatOpenAI,
+)
+ 
+from langchain_mcp_adapters.client import (
+    MultiServerMCPClient,
+)
  
  
 logging.basicConfig(
@@ -41,9 +59,12 @@ OLLAMA_MODEL = os.getenv(
     "qwen3:4b",
 )
  
-AGENT_MODEL_ID = os.getenv(
-    "AGENT_MODEL_ID",
-    "paloalto-agent",
+BASE_AGENT_MODEL_ID = (
+    "paloalto-agent"
+)
+ 
+RAG_AGENT_MODEL_ID = (
+    "paloalto-rag-agent"
 )
  
 AGENT_API_KEY = os.getenv(
@@ -69,48 +90,68 @@ AGENT_TIMEOUT = int(
 )
  
  
-SYSTEM_PROMPT = """
-あなたは企業ネットワーク運用を支援するAI Agentです。
+BASE_SYSTEM_PROMPT = """
+あなたは企業ネットワーク運用を支援する
+Palo Alto Networks AI Agentです。
  
 必ず日本語で回答してください。
  
-利用可能な情報源は主に次の2種類です。
+このモデルは実機確認専用です。
  
-1. Palo Alto MCP
-   実際のPA-VMから現在の設定や状態を取得します。
- 
-2. RAG MCP
-   Qdrantに登録されたPalo Alto Networks関連文書を検索します。
+Palo Alto MCPを使ってPA-VMの現在状態を確認できます。
  
 ルール:
  
-- 実機の現在状態について質問された場合は、
-  推測せずPalo Alto MCPを使用してください。
+- 実機情報について推測しないこと。
+- 実機状態に関する質問ではPalo Alto MCPを使用すること。
+- RAG検索は使用しないこと。
+- APIキーや認証情報を回答に含めないこと。
+- 現在のMCP ToolはRead Onlyです。
+- 設定変更を行わないこと。
+"""
  
-- 製品仕様、設定方法、推奨事項、技術説明、
-  ドキュメント根拠が必要な場合は、
-  RAG MCPのsearch_paloalto_docsを使用してください。
  
-- 実機設定とドキュメントの比較を求められた場合は、
-  Palo Alto MCPとRAG MCPの両方を使用してください。
+RAG_SYSTEM_PROMPT = """
+あなたは企業ネットワーク運用を支援する
+Palo Alto Networks AI Agentです。
  
-- Toolから取得した情報と一般知識を区別してください。
+必ず日本語で回答してください。
  
-- RAG結果を使用した場合は、
-  回答中に資料名とページ番号が取得できる場合は明示してください。
+このモデルでは次の2種類の情報源を利用できます。
  
-- APIキー、パスワード、認証情報などのSecretを
-  回答に含めないでください。
+1. Palo Alto MCP
+   PA-VMの現在の設定・状態・ログを取得します。
  
-- 現在のPalo Alto MCPはRead Onlyです。
-  設定変更を行わないでください。
+2. Documentation RAG MCP
+   Qdrantに保存されたPalo Alto Networks TechDocsを検索します。
  
-- 必ず日本語で簡潔かつ技術的に正確に回答してください。
+ルール:
+ 
+- 実機の現在状態はPalo Alto MCPで確認すること。
+ 
+- 製品仕様、設定方法、推奨事項、
+  技術的な根拠が必要な場合は
+  search_paloalto_docsを使用すること。
+ 
+- 実機設定とTechDocsの比較を求められた場合は
+  両方のToolを使用すること。
+ 
+- TechDocs検索結果を使った場合は、
+  可能な限り資料タイトル、URL、
+  PDFの場合はページ番号を回答に示すこと。
+ 
+- 一般知識だけでTechDocsの内容を推測しないこと。
+ 
+- APIキーや認証情報を回答に含めないこと。
+ 
+- Palo Alto MCPは現在Read Onlyです。
+  設定変更を行わないこと。
 """
  
  
 class ChatRequest(BaseModel):
     message: str
+    model: str = BASE_AGENT_MODEL_ID
  
  
 class OpenAIMessage(BaseModel):
@@ -119,7 +160,7 @@ class OpenAIMessage(BaseModel):
  
  
 class OpenAIChatRequest(BaseModel):
-    model: str = AGENT_MODEL_ID
+    model: str = BASE_AGENT_MODEL_ID
     messages: list[OpenAIMessage]
     stream: bool = False
     temperature: float | None = None
@@ -131,16 +172,16 @@ def check_api_key(
 ) -> None:
  
     if not authorization:
+ 
         raise HTTPException(
             status_code=401,
             detail="Authorization header is required",
         )
  
-    expected = (
+    if authorization != (
         f"Bearer {AGENT_API_KEY}"
-    )
+    ):
  
-    if authorization != expected:
         raise HTTPException(
             status_code=401,
             detail="Invalid API key",
@@ -159,11 +200,46 @@ def get_last_user_message(
             message.role == "user"
             and message.content
         ):
+ 
             return message.content
  
     raise HTTPException(
         status_code=400,
         detail="No user message found",
+    )
+ 
+ 
+def get_agent_for_model(
+    app: FastAPI,
+    model_id: str,
+):
+ 
+    if (
+        model_id
+        == BASE_AGENT_MODEL_ID
+    ):
+ 
+        return (
+            app.state.base_agent,
+            app.state.base_tools,
+        )
+ 
+    if (
+        model_id
+        == RAG_AGENT_MODEL_ID
+    ):
+ 
+        return (
+            app.state.rag_agent,
+            app.state.rag_tools,
+        )
+ 
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"Unknown model: "
+            f"{model_id}"
+        ),
     )
  
  
@@ -191,6 +267,7 @@ def extract_final_answer(
             content,
             str,
         ):
+ 
             content = content.strip()
  
             if content:
@@ -213,6 +290,7 @@ def extract_final_answer(
         )
  
         if content:
+ 
             return (
                 "Toolから取得した情報です。\n\n"
                 f"{content}"
@@ -227,25 +305,35 @@ def extract_final_answer(
 async def run_agent(
     app: FastAPI,
     message: str,
-) -> tuple[
-    str,
-    list[dict[str, Any]],
-]:
+    model_id: str,
+):
+ 
+    agent, tools = (
+        get_agent_for_model(
+            app,
+            model_id,
+        )
+    )
  
     logger.info(
-        "Agent request started: %s",
+        "Agent request started "
+        "model=%s message=%s",
+        model_id,
         message,
     )
  
     try:
  
         result = await asyncio.wait_for(
-            app.state.agent.ainvoke(
+            agent.ainvoke(
                 {
                     "messages": [
                         {
-                            "role": "user",
-                            "content": message,
+                            "role":
+                                "user",
+ 
+                            "content":
+                                message,
                         }
                     ]
                 }
@@ -254,11 +342,6 @@ async def run_agent(
         )
  
     except asyncio.TimeoutError as exc:
- 
-        logger.error(
-            "Agent timed out after %s seconds",
-            AGENT_TIMEOUT,
-        )
  
         raise HTTPException(
             status_code=504,
@@ -302,22 +385,14 @@ async def run_agent(
             }
         )
  
-    logger.info(
-        "Agent messages: %s",
-        debug_messages,
-    )
- 
     answer = extract_final_answer(
         result["messages"]
-    )
- 
-    logger.info(
-        "Agent request completed"
     )
  
     return (
         answer,
         debug_messages,
+        tools,
     )
  
  
@@ -326,40 +401,41 @@ async def lifespan(
     app: FastAPI,
 ):
  
-    logger.info(
-        "Connecting Palo Alto MCP: %s",
-        PALOALTO_MCP_URL,
+    mcp_client = (
+        MultiServerMCPClient(
+            {
+                "paloalto": {
+                    "transport":
+                        "http",
+ 
+                    "url":
+                        PALOALTO_MCP_URL,
+                },
+ 
+                "rag": {
+                    "transport":
+                        "http",
+ 
+                    "url":
+                        RAG_MCP_URL,
+                },
+            }
+        )
     )
  
-    logger.info(
-        "Connecting RAG MCP: %s",
-        RAG_MCP_URL,
-    )
- 
-    mcp_client = MultiServerMCPClient(
-        {
-            "paloalto": {
-                "transport": "http",
-                "url": PALOALTO_MCP_URL,
-            },
- 
-            "rag": {
-                "transport": "http",
-                "url": RAG_MCP_URL,
-            },
-        }
-    )
- 
-    tools = await (
+    all_tools = await (
         mcp_client.get_tools()
     )
  
-    logger.info(
-        "MCP tools loaded: %s",
-        [
-            tool.name
-            for tool in tools
-        ],
+    base_tools = [
+        tool
+        for tool in all_tools
+        if tool.name
+        != "search_paloalto_docs"
+    ]
+ 
+    rag_tools = (
+        all_tools
     )
  
     model = ChatOpenAI(
@@ -369,25 +445,64 @@ async def lifespan(
         temperature=0,
     )
  
-    agent = create_agent(
+    base_agent = create_agent(
         model=model,
-        tools=tools,
-        system_prompt=SYSTEM_PROMPT,
+        tools=base_tools,
+        system_prompt=(
+            BASE_SYSTEM_PROMPT
+        ),
+    )
+ 
+    rag_agent = create_agent(
+        model=model,
+        tools=rag_tools,
+        system_prompt=(
+            RAG_SYSTEM_PROMPT
+        ),
     )
  
     app.state.mcp_client = (
         mcp_client
     )
  
-    app.state.tools = tools
-    app.state.agent = agent
+    app.state.base_tools = (
+        base_tools
+    )
+ 
+    app.state.rag_tools = (
+        rag_tools
+    )
+ 
+    app.state.base_agent = (
+        base_agent
+    )
+ 
+    app.state.rag_agent = (
+        rag_agent
+    )
+ 
+    logger.info(
+        "Base tools: %s",
+        [
+            tool.name
+            for tool in base_tools
+        ],
+    )
+ 
+    logger.info(
+        "RAG tools: %s",
+        [
+            tool.name
+            for tool in rag_tools
+        ],
+    )
  
     yield
  
  
 app = FastAPI(
     title="AI Network Agent",
-    version="0.5.0",
+    version="0.6.0",
     lifespan=lifespan,
 )
  
@@ -399,19 +514,20 @@ async def health(
  
     return {
         "status": "ok",
-        "agent_model":
-            AGENT_MODEL_ID,
  
-        "llm_model":
-            OLLAMA_MODEL,
+        "models": {
+            BASE_AGENT_MODEL_ID: [
+                tool.name
+                for tool
+                in request.app.state.base_tools
+            ],
  
-        "llm_endpoint":
-            OLLAMA_BASE_URL,
- 
-        "tools": [
-            tool.name
-            for tool in request.app.state.tools
-        ],
+            RAG_AGENT_MODEL_ID: [
+                tool.name
+                for tool
+                in request.app.state.rag_tools
+            ],
+        },
     }
  
  
@@ -426,24 +542,41 @@ async def models(
         authorization
     )
  
+    created = int(
+        time.time()
+    )
+ 
     return {
         "object": "list",
+ 
         "data": [
             {
                 "id":
-                    AGENT_MODEL_ID,
+                    BASE_AGENT_MODEL_ID,
  
                 "object":
                     "model",
  
                 "created":
-                    int(
-                        time.time()
-                    ),
+                    created,
  
                 "owned_by":
                     "local-ai-platform",
-            }
+            },
+ 
+            {
+                "id":
+                    RAG_AGENT_MODEL_ID,
+ 
+                "object":
+                    "model",
+ 
+                "created":
+                    created,
+ 
+                "owned_by":
+                    "local-ai-platform",
+            },
         ],
     }
  
@@ -462,18 +595,6 @@ async def openai_chat_completions(
     check_api_key(
         authorization
     )
- 
-    if (
-        body.model
-        != AGENT_MODEL_ID
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Unknown model: "
-                f"{body.model}"
-            ),
-        )
  
     user_message = (
         get_last_user_message(
@@ -495,19 +616,27 @@ async def openai_chat_completions(
         async def event_stream():
  
             first_chunk = {
-                "id": completion_id,
+                "id":
+                    completion_id,
+ 
                 "object":
                     "chat.completion.chunk",
-                "created": created,
+ 
+                "created":
+                    created,
+ 
                 "model":
-                    AGENT_MODEL_ID,
+                    body.model,
+ 
                 "choices": [
                     {
                         "index": 0,
+ 
                         "delta": {
                             "role":
                                 "assistant"
                         },
+ 
                         "finish_reason":
                             None,
                     }
@@ -525,10 +654,11 @@ async def openai_chat_completions(
  
             try:
  
-                answer, _ = (
+                answer, _, _ = (
                     await run_agent(
                         request.app,
                         user_message,
+                        body.model,
                     )
                 )
  
@@ -543,7 +673,7 @@ async def openai_chat_completions(
                         created,
  
                     "model":
-                        AGENT_MODEL_ID,
+                        body.model,
  
                     "choices": [
                         {
@@ -580,7 +710,7 @@ async def openai_chat_completions(
                         created,
  
                     "model":
-                        AGENT_MODEL_ID,
+                        body.model,
  
                     "choices": [
                         {
@@ -641,21 +771,29 @@ async def openai_chat_completions(
             ),
         )
  
-    answer, _ = await run_agent(
+    answer, _, _ = await run_agent(
         request.app,
         user_message,
+        body.model,
     )
  
     return {
-        "id": completion_id,
+        "id":
+            completion_id,
+ 
         "object":
             "chat.completion",
-        "created": created,
+ 
+        "created":
+            created,
+ 
         "model":
-            AGENT_MODEL_ID,
+            body.model,
+ 
         "choices": [
             {
                 "index": 0,
+ 
                 "message": {
                     "role":
                         "assistant",
@@ -663,10 +801,12 @@ async def openai_chat_completions(
                     "content":
                         answer,
                 },
+ 
                 "finish_reason":
                     "stop",
             }
         ],
+ 
         "usage": {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -681,22 +821,26 @@ async def debug_chat(
     request: Request,
 ):
  
-    answer, debug_messages = (
-        await run_agent(
-            request.app,
-            body.message,
-        )
+    (
+        answer,
+        debug_messages,
+        tools,
+    ) = await run_agent(
+        request.app,
+        body.message,
+        body.model,
     )
  
     return {
-        "answer": answer,
+        "answer":
+            answer,
  
-        "agent_model":
-            AGENT_MODEL_ID,
+        "model":
+            body.model,
  
         "available_tools": [
             tool.name
-            for tool in request.app.state.tools
+            for tool in tools
         ],
  
         "messages":
