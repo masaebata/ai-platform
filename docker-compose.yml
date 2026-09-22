@@ -181,9 +181,21 @@ services:
       PALOALTO_MCP_URL: http://paloalto-mcp:8000/mcp
       RAG_MCP_URL: http://rag-mcp:8000/mcp
  
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+ 
     depends_on:
-      - paloalto-mcp
-      - rag-mcp
+      postgres:
+        condition: service_healthy
+ 
+      paloalto-mcp:
+        condition: service_started
+ 
+      rag-mcp:
+        condition: service_started
  
     networks:
       - ai-network

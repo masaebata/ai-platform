@@ -3,3 +3,4 @@ uvicorn[standard]
 langchain
 langchain-openai
 langchain-mcp-adapters
+asyncpg

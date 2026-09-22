@@ -8,6 +8,8 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
  
+import asyncpg
+ 
 from fastapi import (
     FastAPI,
     Header,
@@ -56,7 +58,7 @@ OLLAMA_BASE_URL = os.getenv(
  
 OLLAMA_MODEL = os.getenv(
     "OLLAMA_MODEL",
-    "qwen3:4b",
+    "qwen3-4b-wiz",
 )
  
 BASE_AGENT_MODEL_ID = (
@@ -88,6 +90,31 @@ AGENT_TIMEOUT = int(
         "600",
     )
 )
+ 
+ 
+POSTGRES_HOST = os.getenv(
+    "POSTGRES_HOST",
+    "postgres",
+)
+ 
+POSTGRES_PORT = int(
+    os.getenv(
+        "POSTGRES_PORT",
+        "5432",
+    )
+)
+ 
+POSTGRES_USER = os.environ[
+    "POSTGRES_USER"
+]
+ 
+POSTGRES_PASSWORD = os.environ[
+    "POSTGRES_PASSWORD"
+]
+ 
+POSTGRES_DB = os.environ[
+    "POSTGRES_DB"
+]
  
  
 BASE_SYSTEM_PROMPT = """
@@ -214,20 +241,14 @@ def get_agent_for_model(
     model_id: str,
 ):
  
-    if (
-        model_id
-        == BASE_AGENT_MODEL_ID
-    ):
+    if model_id == BASE_AGENT_MODEL_ID:
  
         return (
             app.state.base_agent,
             app.state.base_tools,
         )
  
-    if (
-        model_id
-        == RAG_AGENT_MODEL_ID
-    ):
+    if model_id == RAG_AGENT_MODEL_ID:
  
         return (
             app.state.rag_agent,
@@ -302,11 +323,237 @@ def extract_final_answer(
     )
  
  
+def serialize_content(
+    value: Any,
+) -> Any:
+ 
+    try:
+        json.dumps(
+            value,
+            ensure_ascii=False,
+        )
+ 
+        return value
+ 
+    except Exception:
+ 
+        return str(
+            value
+        )
+ 
+ 
+def extract_tool_audit(
+    result_messages: list[Any],
+) -> tuple[
+    list[str],
+    list[dict[str, Any]],
+]:
+ 
+    tools_used = []
+    tool_results = []
+ 
+    for message in result_messages:
+ 
+        message_type = (
+            message.__class__.__name__
+        )
+ 
+        if message_type == "AIMessage":
+ 
+            tool_calls = getattr(
+                message,
+                "tool_calls",
+                None,
+            )
+ 
+            if not tool_calls:
+                continue
+ 
+            for tool_call in tool_calls:
+ 
+                tool_name = (
+                    tool_call.get(
+                        "name"
+                    )
+                    if isinstance(
+                        tool_call,
+                        dict,
+                    )
+                    else None
+                )
+ 
+                if (
+                    tool_name
+                    and tool_name
+                    not in tools_used
+                ):
+                    tools_used.append(
+                        tool_name
+                    )
+ 
+        elif message_type == "ToolMessage":
+ 
+            tool_results.append(
+                {
+                    "name":
+                        getattr(
+                            message,
+                            "name",
+                            None,
+                        ),
+ 
+                    "content":
+                        serialize_content(
+                            getattr(
+                                message,
+                                "content",
+                                None,
+                            )
+                        ),
+                }
+            )
+ 
+    return (
+        tools_used,
+        tool_results,
+    )
+ 
+ 
+async def init_database(
+    pool: asyncpg.Pool,
+) -> None:
+ 
+    async with pool.acquire() as connection:
+ 
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_audit_logs (
+                id BIGSERIAL PRIMARY KEY,
+                request_id UUID NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ 
+                model VARCHAR(100) NOT NULL,
+                user_message TEXT NOT NULL,
+ 
+                tools_used JSONB NOT NULL DEFAULT '[]'::jsonb,
+                tool_results JSONB NOT NULL DEFAULT '[]'::jsonb,
+ 
+                answer TEXT,
+ 
+                duration_ms BIGINT,
+ 
+                status VARCHAR(20) NOT NULL,
+ 
+                error_message TEXT
+            );
+            """
+        )
+ 
+        await connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_agent_audit_logs_created_at
+            ON agent_audit_logs (created_at DESC);
+            """
+        )
+ 
+        await connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_agent_audit_logs_model
+            ON agent_audit_logs (model);
+            """
+        )
+ 
+        await connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_agent_audit_logs_status
+            ON agent_audit_logs (status);
+            """
+        )
+ 
+ 
+async def write_audit_log(
+    app: FastAPI,
+    request_id: str,
+    model: str,
+    user_message: str,
+    tools_used: list[str],
+    tool_results: list[dict[str, Any]],
+    answer: str | None,
+    duration_ms: int,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+ 
+    try:
+ 
+        async with (
+            app.state.db_pool.acquire()
+            as connection
+        ):
+ 
+            await connection.execute(
+                """
+                INSERT INTO agent_audit_logs (
+                    request_id,
+                    model,
+                    user_message,
+                    tools_used,
+                    tool_results,
+                    answer,
+                    duration_ms,
+                    status,
+                    error_message
+                )
+                VALUES (
+                    $1::uuid,
+                    $2,
+                    $3,
+                    $4::jsonb,
+                    $5::jsonb,
+                    $6,
+                    $7,
+                    $8,
+                    $9
+                )
+                """,
+                request_id,
+                model,
+                user_message,
+                json.dumps(
+                    tools_used,
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    tool_results,
+                    ensure_ascii=False,
+                ),
+                answer,
+                duration_ms,
+                status,
+                error_message,
+            )
+ 
+    except Exception:
+ 
+        logger.exception(
+            "Failed to write audit log"
+        )
+ 
+ 
 async def run_agent(
     app: FastAPI,
     message: str,
     model_id: str,
 ):
+ 
+    request_id = str(
+        uuid.uuid4()
+    )
+ 
+    started = time.perf_counter()
  
     agent, tools = (
         get_agent_for_model(
@@ -317,9 +564,10 @@ async def run_agent(
  
     logger.info(
         "Agent request started "
-        "model=%s message=%s",
+        "request_id=%s "
+        "model=%s",
+        request_id,
         model_id,
-        message,
     )
  
     try:
@@ -341,7 +589,121 @@ async def run_agent(
             timeout=AGENT_TIMEOUT,
         )
  
+        result_messages = (
+            result["messages"]
+        )
+ 
+        answer = (
+            extract_final_answer(
+                result_messages
+            )
+        )
+ 
+        (
+            tools_used,
+            tool_results,
+        ) = extract_tool_audit(
+            result_messages
+        )
+ 
+        duration_ms = int(
+            (
+                time.perf_counter()
+                - started
+            )
+            * 1000
+        )
+ 
+        await write_audit_log(
+            app=app,
+            request_id=request_id,
+            model=model_id,
+            user_message=message,
+            tools_used=tools_used,
+            tool_results=tool_results,
+            answer=answer,
+            duration_ms=duration_ms,
+            status="success",
+        )
+ 
+        logger.info(
+            "Agent request completed "
+            "request_id=%s "
+            "duration_ms=%s "
+            "tools=%s",
+            request_id,
+            duration_ms,
+            tools_used,
+        )
+ 
+        debug_messages = []
+ 
+        for msg in result_messages:
+ 
+            debug_messages.append(
+                {
+                    "type":
+                        msg.__class__.__name__,
+ 
+                    "content":
+                        serialize_content(
+                            getattr(
+                                msg,
+                                "content",
+                                None,
+                            )
+                        ),
+ 
+                    "tool_calls":
+                        serialize_content(
+                            getattr(
+                                msg,
+                                "tool_calls",
+                                None,
+                            )
+                        ),
+ 
+                    "name":
+                        getattr(
+                            msg,
+                            "name",
+                            None,
+                        ),
+                }
+            )
+ 
+        return (
+            answer,
+            debug_messages,
+            tools,
+            request_id,
+        )
+ 
     except asyncio.TimeoutError as exc:
+ 
+        duration_ms = int(
+            (
+                time.perf_counter()
+                - started
+            )
+            * 1000
+        )
+ 
+        await write_audit_log(
+            app=app,
+            request_id=request_id,
+            model=model_id,
+            user_message=message,
+            tools_used=[],
+            tool_results=[],
+            answer=None,
+            duration_ms=duration_ms,
+            status="timeout",
+            error_message=(
+                f"Agent timeout after "
+                f"{AGENT_TIMEOUT} seconds"
+            ),
+        )
  
         raise HTTPException(
             status_code=504,
@@ -351,55 +713,70 @@ async def run_agent(
             ),
         ) from exc
  
-    debug_messages = []
+    except Exception as exc:
  
-    for msg in result[
-        "messages"
-    ]:
- 
-        debug_messages.append(
-            {
-                "type":
-                    msg.__class__.__name__,
- 
-                "content":
-                    getattr(
-                        msg,
-                        "content",
-                        None,
-                    ),
- 
-                "tool_calls":
-                    getattr(
-                        msg,
-                        "tool_calls",
-                        None,
-                    ),
- 
-                "name":
-                    getattr(
-                        msg,
-                        "name",
-                        None,
-                    ),
-            }
+        duration_ms = int(
+            (
+                time.perf_counter()
+                - started
+            )
+            * 1000
         )
  
-    answer = extract_final_answer(
-        result["messages"]
-    )
+        await write_audit_log(
+            app=app,
+            request_id=request_id,
+            model=model_id,
+            user_message=message,
+            tools_used=[],
+            tool_results=[],
+            answer=None,
+            duration_ms=duration_ms,
+            status="error",
+            error_message=str(
+                exc
+            ),
+        )
  
-    return (
-        answer,
-        debug_messages,
-        tools,
-    )
+        logger.exception(
+            "Agent request failed "
+            "request_id=%s",
+            request_id,
+        )
+ 
+        raise
  
  
 @asynccontextmanager
 async def lifespan(
     app: FastAPI,
 ):
+ 
+    logger.info(
+        "Connecting PostgreSQL: "
+        "%s:%s/%s",
+        POSTGRES_HOST,
+        POSTGRES_PORT,
+        POSTGRES_DB,
+    )
+ 
+    db_pool = await asyncpg.create_pool(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+        database=POSTGRES_DB,
+        min_size=1,
+        max_size=5,
+    )
+ 
+    await init_database(
+        db_pool
+    )
+ 
+    app.state.db_pool = (
+        db_pool
+    )
  
     mcp_client = (
         MultiServerMCPClient(
@@ -499,10 +876,12 @@ async def lifespan(
  
     yield
  
+    await db_pool.close()
+ 
  
 app = FastAPI(
     title="AI Network Agent",
-    version="0.6.0",
+    version="0.7.0",
     lifespan=lifespan,
 )
  
@@ -514,6 +893,12 @@ async def health(
  
     return {
         "status": "ok",
+ 
+        "llm_model":
+            OLLAMA_MODEL,
+ 
+        "database":
+            "connected",
  
         "models": {
             BASE_AGENT_MODEL_ID: [
@@ -654,12 +1039,15 @@ async def openai_chat_completions(
  
             try:
  
-                answer, _, _ = (
-                    await run_agent(
-                        request.app,
-                        user_message,
-                        body.model,
-                    )
+                (
+                    answer,
+                    _,
+                    _,
+                    request_id,
+                ) = await run_agent(
+                    request.app,
+                    user_message,
+                    body.model,
                 )
  
                 content_chunk = {
@@ -771,7 +1159,12 @@ async def openai_chat_completions(
             ),
         )
  
-    answer, _, _ = await run_agent(
+    (
+        answer,
+        _,
+        _,
+        request_id,
+    ) = await run_agent(
         request.app,
         user_message,
         body.model,
@@ -789,6 +1182,9 @@ async def openai_chat_completions(
  
         "model":
             body.model,
+ 
+        "audit_request_id":
+            request_id,
  
         "choices": [
             {
@@ -825,6 +1221,7 @@ async def debug_chat(
         answer,
         debug_messages,
         tools,
+        request_id,
     ) = await run_agent(
         request.app,
         body.message,
@@ -832,6 +1229,9 @@ async def debug_chat(
     )
  
     return {
+        "request_id":
+            request_id,
+ 
         "answer":
             answer,
  
