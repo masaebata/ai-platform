@@ -64,30 +64,6 @@ services:
       - ai-network
  
  
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: ai-open-webui
-    restart: unless-stopped
- 
-    ports:
-      - "3000:8080"
- 
-    environment:
-      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
-      ENABLE_OPENAI_API: "true"
-      OPENAI_API_BASE_URL: http://litellm:4000/v1
-      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
- 
-    volumes:
-      - open-webui-data:/app/backend/data
- 
-    depends_on:
-      - litellm
- 
-    networks:
-      - ai-network
- 
- 
   paloalto-mcp:
     build:
       context: ./mcp-servers/paloalto
@@ -120,11 +96,48 @@ services:
  
     environment:
       OLLAMA_BASE_URL: http://192.168.11.129:11434/v1
-      AGENT_MODEL: qwen3:4b
+      OLLAMA_MODEL: qwen3:4b
+ 
+      AGENT_MODEL_ID: paloalto-agent
+      AGENT_API_KEY: ${AGENT_API_KEY}
+      AGENT_TIMEOUT: ${AGENT_TIMEOUT:-180}
+ 
       PALOALTO_MCP_URL: http://paloalto-mcp:8000/mcp
  
     depends_on:
       - paloalto-mcp
+ 
+    networks:
+      - ai-network
+ 
+ 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ai-open-webui
+    restart: unless-stopped
+ 
+    ports:
+      - "3000:8080"
+ 
+    environment:
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+ 
+      ENABLE_OPENAI_API: "true"
+ 
+      OPENAI_API_BASE_URLS: >-
+http://litellm:4000/v1;
+http://ai-agent:8080/v1
+ 
+      OPENAI_API_KEYS: >-
+        ${LITELLM_MASTER_KEY};
+        ${AGENT_API_KEY}
+ 
+    volumes:
+      - open-webui-data:/app/backend/data
+ 
+    depends_on:
+      - litellm
+      - ai-agent
  
     networks:
       - ai-network
