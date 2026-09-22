@@ -129,13 +129,18 @@ services:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: paloalto-docs
       EMBEDDING_MODEL: intfloat/multilingual-e5-small
-      DOCUMENT_DIR: /documents
-      RAG_CHUNK_SIZE: 1200
-      RAG_CHUNK_OVERLAP: 200
+ 
+      URL_LIST: /app/urls.txt
+ 
+      RAG_CHUNK_SIZE: 800
+      RAG_CHUNK_OVERLAP: 120
+      RAG_HTTP_TIMEOUT: 60
+      RAG_USER_AGENT: ai-platform-rag/1.0
+ 
       HF_HOME: /models/huggingface
  
     volumes:
-      - /opt/ai-app/rag-documents:/documents:ro
+      - ./rag/urls.txt:/app/urls.txt:ro
       - rag-model-cache:/models/huggingface
  
     depends_on:
@@ -161,6 +166,7 @@ services:
     environment:
       OLLAMA_BASE_URL: http://192.168.11.129:11434/v1
       OLLAMA_MODEL: qwen3:4b
+ 
       AGENT_MODEL_ID: paloalto-agent
       AGENT_API_KEY: ${AGENT_API_KEY}
       AGENT_TIMEOUT: ${AGENT_TIMEOUT:-600}
@@ -186,9 +192,12 @@ services:
  
     environment:
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+ 
       ENABLE_OPENAI_API: "true"
+ 
       OPENAI_API_BASE_URLS: "http://litellm:4000/v1;http://ai-agent:8080/v1"
       OPENAI_API_KEYS: "${LITELLM_MASTER_KEY};${AGENT_API_KEY}"
+ 
       ENABLE_PERSISTENT_CONFIG: "false"
       RESET_CONFIG_ON_START: "true"
  

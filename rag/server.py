@@ -8,7 +8,7 @@ from common import (
  
  
 mcp = FastMCP(
-    name="Palo Alto Documentation RAG MCP"
+    name="Documentation RAG MCP"
 )
  
  
@@ -18,24 +18,27 @@ async def search_paloalto_docs(
     limit: int = 5,
 ) -> dict:
     """
-    Search Palo Alto Networks documentation
-    stored in the local Qdrant RAG database.
+    Search documentation stored in the
+    local Qdrant RAG database.
  
-    Use this tool when the user asks about:
-    - PAN-OS configuration guidance
+    Use this tool for:
     - Palo Alto Networks documentation
+    - PAN-OS configuration guidance
     - recommended configuration
-    - configuration meaning
+    - technical specifications
     - implementation guidance
-    - technical references
+    - configuration meaning
+    - troubleshooting documentation
  
     Args:
+ 
         query:
             Natural language search query.
  
         limit:
-            Maximum number of chunks to return.
+            Maximum number of results.
             Default is 5.
+            Maximum is 10.
  
     Read-only operation.
     """
@@ -51,12 +54,13 @@ async def search_paloalto_docs(
     if not client.collection_exists(
         QDRANT_COLLECTION
     ):
+ 
         return {
             "count": 0,
             "results": [],
             "message": (
-                "RAG collection has not "
-                "been created yet."
+                "RAG collection does "
+                "not exist."
             ),
         }
  
@@ -82,19 +86,38 @@ async def search_paloalto_docs(
  
         results.append(
             {
-                "score": point.score,
-                "source": payload.get(
-                    "source"
-                ),
-                "page": payload.get(
-                    "page"
-                ),
-                "chunk_index": payload.get(
-                    "chunk_index"
-                ),
-                "text": payload.get(
-                    "text"
-                ),
+                "score":
+                    point.score,
+ 
+                "title":
+                    payload.get(
+                        "title"
+                    ),
+ 
+                "url":
+                    payload.get(
+                        "source_url"
+                    ),
+ 
+                "source_type":
+                    payload.get(
+                        "source_type"
+                    ),
+ 
+                "page":
+                    payload.get(
+                        "page"
+                    ),
+ 
+                "chunk_index":
+                    payload.get(
+                        "chunk_index"
+                    ),
+ 
+                "text":
+                    payload.get(
+                        "text"
+                    ),
             }
         )
  

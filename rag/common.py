@@ -23,6 +23,7 @@ EMBEDDING_MODEL = os.getenv(
  
 @lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
+ 
     return SentenceTransformer(
         EMBEDDING_MODEL
     )
@@ -30,6 +31,7 @@ def get_embedding_model() -> SentenceTransformer:
  
 @lru_cache(maxsize=1)
 def get_qdrant_client() -> QdrantClient:
+ 
     return QdrantClient(
         url=QDRANT_URL
     )
@@ -62,7 +64,9 @@ def embed_query(
     model = get_embedding_model()
  
     vector = model.encode(
-        [f"query: {query}"],
+        [
+            f"query: {query}"
+        ],
         normalize_embeddings=True,
         show_progress_bar=False,
     )[0]

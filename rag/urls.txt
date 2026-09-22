@@ -1,0 +1,6 @@
+# Palo Alto Networks RAG Sources
+# # で始まる行は無視されます。
+ 
+https://docs.paloaltonetworks.com/xxxxxxxx
+https://docs.paloaltonetworks.com/xxxxxxxx/xxxxxxxx.pdf
+https://knowledgebase.paloaltonetworks.com/xxxxxxxx
