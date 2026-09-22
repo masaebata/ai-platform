@@ -173,7 +173,7 @@ services:
  
     environment:
       OLLAMA_BASE_URL: http://192.168.11.129:11434/v1
-      OLLAMA_MODEL: qwen3:4b
+      OLLAMA_MODEL: qwen3-4b-wiz
  
       AGENT_API_KEY: ${AGENT_API_KEY}
       AGENT_TIMEOUT: ${AGENT_TIMEOUT:-600}
