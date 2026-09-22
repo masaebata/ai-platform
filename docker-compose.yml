@@ -68,3 +68,19 @@ volumes:
   postgres-data:
   qdrant-data:
   open-webui-data:
+
+  paloalto-mcp:
+    build:
+      context: ./mcp-servers/paloalto
+ 
+    container_name: ai-paloalto-mcp
+ 
+    restart: unless-stopped
+ 
+    environment:
+      PANOS_HOST: ${PANOS_HOST}
+      PANOS_API_KEY: ${PANOS_API_KEY}
+      PANOS_VERIFY_SSL: ${PANOS_VERIFY_SSL:-false}
+ 
+    networks:
+      - ai-network
