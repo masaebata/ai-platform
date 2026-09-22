@@ -6,21 +6,45 @@ on:
       - main
  
 jobs:
+ 
   deploy:
+ 
     runs-on: self-hosted
  
     steps:
+ 
       - name: Checkout repository
         uses: actions/checkout@v4
  
+ 
       - name: Validate Docker Compose
-        run: docker compose --env-file /etc/ai-platform/.env config
+        run: |
+          docker compose \
+            --env-file /etc/ai-platform/.env \
+            config
+ 
  
       - name: Pull container images
-        run: docker compose --env-file /etc/ai-platform/.env pull
+        run: |
+          docker compose \
+            --env-file /etc/ai-platform/.env \
+            pull
+ 
+ 
+      - name: Build local images
+        run: |
+          docker compose \
+            --env-file /etc/ai-platform/.env \
+            build
+ 
  
       - name: Deploy AI Platform
-        run: docker compose --env-file /etc/ai-platform/.env up -d
+        run: |
+          docker compose \
+            --env-file /etc/ai-platform/.env \
+            up -d --remove-orphans
+ 
  
       - name: Show container status
-        run: docker compose ps
+        run: |
+          docker compose ps

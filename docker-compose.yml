@@ -108,6 +108,32 @@ services:
       - ai-network
  
  
+  ai-agent:
+    build:
+      context: ./agent
+ 
+    container_name: ai-agent
+    restart: unless-stopped
+ 
+    ports:
+      - "8081:8080"
+ 
+    environment:
+      LITELLM_BASE_URL: http://litellm:4000/v1
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+ 
+      AGENT_MODEL: ${AGENT_MODEL:-local-general}
+ 
+      PALOALTO_MCP_URL: http://paloalto-mcp:8000/mcp
+ 
+    depends_on:
+      - litellm
+      - paloalto-mcp
+ 
+    networks:
+      - ai-network
+ 
+ 
   mcp-client:
     image: python:3.12-slim
     container_name: ai-mcp-client
