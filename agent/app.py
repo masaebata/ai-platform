@@ -9,7 +9,7 @@ from typing import Any
  
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
  
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
@@ -18,10 +18,17 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
  
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    format=(
+        "%(asctime)s "
+        "%(levelname)s "
+        "%(name)s "
+        "%(message)s"
+    ),
 )
  
-logger = logging.getLogger("ai-agent")
+logger = logging.getLogger(
+    "ai-agent"
+)
  
  
 OLLAMA_BASE_URL = os.getenv(
@@ -49,10 +56,15 @@ PALOALTO_MCP_URL = os.getenv(
     "http://paloalto-mcp:8000/mcp",
 )
  
+RAG_MCP_URL = os.getenv(
+    "RAG_MCP_URL",
+    "http://rag-mcp:8000/mcp",
+)
+ 
 AGENT_TIMEOUT = int(
     os.getenv(
         "AGENT_TIMEOUT",
-        "180",
+        "600",
     )
 )
  
@@ -62,19 +74,38 @@ SYSTEM_PROMPT = """
  
 必ず日本語で回答してください。
  
-Palo Alto Networksファイアウォールの現在状態を確認する必要がある場合は、
-推測せず、利用可能なMCP Toolを使用してください。
+利用可能な情報源は主に次の2種類です。
  
-現在のMCP ToolはRead Onlyです。
+1. Palo Alto MCP
+   実際のPA-VMから現在の設定や状態を取得します。
+ 
+2. RAG MCP
+   Qdrantに登録されたPalo Alto Networks関連文書を検索します。
  
 ルール:
-- 必ず日本語で回答すること
-- 実機情報について推測しないこと
-- Palo Alto Networksの実機情報を聞かれた場合はMCP Toolを優先すること
-- Toolから取得した情報と一般知識を明確に区別すること
-- APIキー、パスワード、認証情報などのSecretを回答に含めないこと
-- 現時点では設定変更を行わないこと
-- Toolの実行結果を取得した場合は、日本語で簡潔に整理して回答すること
+ 
+- 実機の現在状態について質問された場合は、
+  推測せずPalo Alto MCPを使用してください。
+ 
+- 製品仕様、設定方法、推奨事項、技術説明、
+  ドキュメント根拠が必要な場合は、
+  RAG MCPのsearch_paloalto_docsを使用してください。
+ 
+- 実機設定とドキュメントの比較を求められた場合は、
+  Palo Alto MCPとRAG MCPの両方を使用してください。
+ 
+- Toolから取得した情報と一般知識を区別してください。
+ 
+- RAG結果を使用した場合は、
+  回答中に資料名とページ番号が取得できる場合は明示してください。
+ 
+- APIキー、パスワード、認証情報などのSecretを
+  回答に含めないでください。
+ 
+- 現在のPalo Alto MCPはRead Onlyです。
+  設定変更を行わないでください。
+ 
+- 必ず日本語で簡潔かつ技術的に正確に回答してください。
 """
  
  
@@ -98,13 +129,16 @@ class OpenAIChatRequest(BaseModel):
 def check_api_key(
     authorization: str | None,
 ) -> None:
+ 
     if not authorization:
         raise HTTPException(
             status_code=401,
             detail="Authorization header is required",
         )
  
-    expected = f"Bearer {AGENT_API_KEY}"
+    expected = (
+        f"Bearer {AGENT_API_KEY}"
+    )
  
     if authorization != expected:
         raise HTTPException(
@@ -116,7 +150,11 @@ def check_api_key(
 def get_last_user_message(
     messages: list[OpenAIMessage],
 ) -> str:
-    for message in reversed(messages):
+ 
+    for message in reversed(
+        messages
+    ):
+ 
         if (
             message.role == "user"
             and message.content
@@ -129,94 +167,18 @@ def get_last_user_message(
     )
  
  
-def tool_result_fallback(
-    result_messages: list[Any],
-) -> str:
-    """
-    LLMがTool実行後の最終回答を空で返した場合、
-    ToolMessageの内容をユーザー向けに返す。
-    """
- 
-    for message in reversed(result_messages):
- 
-        if message.__class__.__name__ != "ToolMessage":
-            continue
- 
-        content = getattr(
-            message,
-            "content",
-            None,
-        )
- 
-        if not content:
-            continue
- 
-        if not isinstance(content, str):
-            return (
-                "PA-VMから取得した情報です。\n\n"
-                f"{content}"
-            )
- 
-        try:
-            data = json.loads(content)
- 
-            if isinstance(data, dict):
-                labels = {
-                    "hostname": "ホスト名",
-                    "ip_address": "管理IP",
-                    "netmask": "ネットマスク",
-                    "default_gateway": "デフォルトゲートウェイ",
-                    "model": "モデル",
-                    "serial": "シリアル番号",
-                    "sw_version": "PAN-OS",
-                    "app_version": "Applications and Threats",
-                    "av_version": "Antivirus",
-                    "wildfire_version": "WildFire",
-                    "uptime": "稼働時間",
-                    "family": "ファミリー",
-                }
- 
-                lines = [
-                    "PA-VMから取得した機器情報です。",
-                    "",
-                ]
- 
-                for key, value in data.items():
-                    if value is None:
-                        continue
- 
-                    label = labels.get(
-                        key,
-                        key,
-                    )
- 
-                    lines.append(
-                        f"- {label}: {value}"
-                    )
- 
-                return "\n".join(lines)
- 
-        except json.JSONDecodeError:
-            pass
- 
-        return (
-            "PA-VMから取得した情報です。\n\n"
-            f"{content}"
-        )
- 
-    return (
-        "MCP Toolの実行は行われましたが、"
-        "回答本文を生成できませんでした。"
-    )
- 
- 
 def extract_final_answer(
     result_messages: list[Any],
 ) -> str:
  
-    for message in reversed(result_messages):
+    for message in reversed(
+        result_messages
+    ):
  
-        if message.__class__.__name__ != "AIMessage":
+        if (
+            message.__class__.__name__
+            != "AIMessage"
+        ):
             continue
  
         content = getattr(
@@ -225,21 +187,50 @@ def extract_final_answer(
             None,
         )
  
-        if isinstance(content, str):
+        if isinstance(
+            content,
+            str,
+        ):
             content = content.strip()
  
             if content:
                 return content
  
-    return tool_result_fallback(
+    for message in reversed(
         result_messages
+    ):
+ 
+        if (
+            message.__class__.__name__
+            != "ToolMessage"
+        ):
+            continue
+ 
+        content = getattr(
+            message,
+            "content",
+            None,
+        )
+ 
+        if content:
+            return (
+                "Toolから取得した情報です。\n\n"
+                f"{content}"
+            )
+ 
+    return (
+        "Tool処理は実行されましたが、"
+        "回答本文を生成できませんでした。"
     )
  
  
 async def run_agent(
     app: FastAPI,
     message: str,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[
+    str,
+    list[dict[str, Any]],
+]:
  
     logger.info(
         "Agent request started: %s",
@@ -247,6 +238,7 @@ async def run_agent(
     )
  
     try:
+ 
         result = await asyncio.wait_for(
             app.state.agent.ainvoke(
                 {
@@ -262,6 +254,7 @@ async def run_agent(
         )
  
     except asyncio.TimeoutError as exc:
+ 
         logger.error(
             "Agent timed out after %s seconds",
             AGENT_TIMEOUT,
@@ -277,26 +270,35 @@ async def run_agent(
  
     debug_messages = []
  
-    for msg in result["messages"]:
+    for msg in result[
+        "messages"
+    ]:
  
         debug_messages.append(
             {
-                "type": msg.__class__.__name__,
-                "content": getattr(
-                    msg,
-                    "content",
-                    None,
-                ),
-                "tool_calls": getattr(
-                    msg,
-                    "tool_calls",
-                    None,
-                ),
-                "name": getattr(
-                    msg,
-                    "name",
-                    None,
-                ),
+                "type":
+                    msg.__class__.__name__,
+ 
+                "content":
+                    getattr(
+                        msg,
+                        "content",
+                        None,
+                    ),
+ 
+                "tool_calls":
+                    getattr(
+                        msg,
+                        "tool_calls",
+                        None,
+                    ),
+ 
+                "name":
+                    getattr(
+                        msg,
+                        "name",
+                        None,
+                    ),
             }
         )
  
@@ -313,15 +315,25 @@ async def run_agent(
         "Agent request completed"
     )
  
-    return answer, debug_messages
+    return (
+        answer,
+        debug_messages,
+    )
  
  
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(
+    app: FastAPI,
+):
  
     logger.info(
-        "Connecting to Palo Alto MCP: %s",
+        "Connecting Palo Alto MCP: %s",
         PALOALTO_MCP_URL,
+    )
+ 
+    logger.info(
+        "Connecting RAG MCP: %s",
+        RAG_MCP_URL,
     )
  
     mcp_client = MultiServerMCPClient(
@@ -329,11 +341,18 @@ async def lifespan(app: FastAPI):
             "paloalto": {
                 "transport": "http",
                 "url": PALOALTO_MCP_URL,
-            }
+            },
+ 
+            "rag": {
+                "transport": "http",
+                "url": RAG_MCP_URL,
+            },
         }
     )
  
-    tools = await mcp_client.get_tools()
+    tools = await (
+        mcp_client.get_tools()
+    )
  
     logger.info(
         "MCP tools loaded: %s",
@@ -356,7 +375,10 @@ async def lifespan(app: FastAPI):
         system_prompt=SYSTEM_PROMPT,
     )
  
-    app.state.mcp_client = mcp_client
+    app.state.mcp_client = (
+        mcp_client
+    )
+ 
     app.state.tools = tools
     app.state.agent = agent
  
@@ -365,7 +387,7 @@ async def lifespan(app: FastAPI):
  
 app = FastAPI(
     title="AI Network Agent",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
  
@@ -374,11 +396,18 @@ app = FastAPI(
 async def health(
     request: Request,
 ):
+ 
     return {
         "status": "ok",
-        "agent_model": AGENT_MODEL_ID,
-        "llm_model": OLLAMA_MODEL,
-        "llm_endpoint": OLLAMA_BASE_URL,
+        "agent_model":
+            AGENT_MODEL_ID,
+ 
+        "llm_model":
+            OLLAMA_MODEL,
+ 
+        "llm_endpoint":
+            OLLAMA_BASE_URL,
+ 
         "tools": [
             tool.name
             for tool in request.app.state.tools
@@ -392,6 +421,7 @@ async def models(
         default=None
     ),
 ):
+ 
     check_api_key(
         authorization
     )
@@ -400,18 +430,27 @@ async def models(
         "object": "list",
         "data": [
             {
-                "id": AGENT_MODEL_ID,
-                "object": "model",
-                "created": int(
-                    time.time()
-                ),
-                "owned_by": "local-ai-platform",
+                "id":
+                    AGENT_MODEL_ID,
+ 
+                "object":
+                    "model",
+ 
+                "created":
+                    int(
+                        time.time()
+                    ),
+ 
+                "owned_by":
+                    "local-ai-platform",
             }
         ],
     }
  
  
-@app.post("/v1/chat/completions")
+@app.post(
+    "/v1/chat/completions"
+)
 async def openai_chat_completions(
     body: OpenAIChatRequest,
     request: Request,
@@ -419,11 +458,15 @@ async def openai_chat_completions(
         default=None
     ),
 ):
+ 
     check_api_key(
         authorization
     )
  
-    if body.model != AGENT_MODEL_ID:
+    if (
+        body.model
+        != AGENT_MODEL_ID
+    ):
         raise HTTPException(
             status_code=404,
             detail=(
@@ -432,12 +475,15 @@ async def openai_chat_completions(
             ),
         )
  
-    user_message = get_last_user_message(
-        body.messages
+    user_message = (
+        get_last_user_message(
+            body.messages
+        )
     )
  
     completion_id = (
-        f"chatcmpl-{uuid.uuid4().hex}"
+        f"chatcmpl-"
+        f"{uuid.uuid4().hex}"
     )
  
     created = int(
@@ -450,99 +496,149 @@ async def openai_chat_completions(
  
             first_chunk = {
                 "id": completion_id,
-                "object": "chat.completion.chunk",
+                "object":
+                    "chat.completion.chunk",
                 "created": created,
-                "model": AGENT_MODEL_ID,
+                "model":
+                    AGENT_MODEL_ID,
                 "choices": [
                     {
                         "index": 0,
                         "delta": {
-                            "role": "assistant"
+                            "role":
+                                "assistant"
                         },
-                        "finish_reason": None,
+                        "finish_reason":
+                            None,
                     }
                 ],
             }
  
             yield (
-                f"data: "
-                f"{json.dumps(first_chunk, ensure_ascii=False)}"
-                f"\n\n"
+                "data: "
+                + json.dumps(
+                    first_chunk,
+                    ensure_ascii=False,
+                )
+                + "\n\n"
             )
  
             try:
-                answer, _ = await run_agent(
-                    request.app,
-                    user_message,
+ 
+                answer, _ = (
+                    await run_agent(
+                        request.app,
+                        user_message,
+                    )
                 )
  
                 content_chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": AGENT_MODEL_ID,
+                    "id":
+                        completion_id,
+ 
+                    "object":
+                        "chat.completion.chunk",
+ 
+                    "created":
+                        created,
+ 
+                    "model":
+                        AGENT_MODEL_ID,
+ 
                     "choices": [
                         {
                             "index": 0,
+ 
                             "delta": {
-                                "content": answer
+                                "content":
+                                    answer
                             },
-                            "finish_reason": None,
+ 
+                            "finish_reason":
+                                None,
                         }
                     ],
                 }
  
                 yield (
-                    f"data: "
-                    f"{json.dumps(content_chunk, ensure_ascii=False)}"
-                    f"\n\n"
+                    "data: "
+                    + json.dumps(
+                        content_chunk,
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
                 )
  
                 final_chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": AGENT_MODEL_ID,
+                    "id":
+                        completion_id,
+ 
+                    "object":
+                        "chat.completion.chunk",
+ 
+                    "created":
+                        created,
+ 
+                    "model":
+                        AGENT_MODEL_ID,
+ 
                     "choices": [
                         {
                             "index": 0,
                             "delta": {},
-                            "finish_reason": "stop",
+                            "finish_reason":
+                                "stop",
                         }
                     ],
                 }
  
                 yield (
-                    f"data: "
-                    f"{json.dumps(final_chunk, ensure_ascii=False)}"
-                    f"\n\n"
+                    "data: "
+                    + json.dumps(
+                        final_chunk,
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
                 )
  
-                yield "data: [DONE]\n\n"
+                yield (
+                    "data: [DONE]\n\n"
+                )
  
             except Exception as exc:
+ 
                 logger.exception(
                     "Streaming request failed"
                 )
  
                 error_chunk = {
                     "error": {
-                        "message": str(exc),
-                        "type": "agent_error",
+                        "message":
+                            str(exc),
+ 
+                        "type":
+                            "agent_error",
                     }
                 }
  
                 yield (
-                    f"data: "
-                    f"{json.dumps(error_chunk, ensure_ascii=False)}"
-                    f"\n\n"
+                    "data: "
+                    + json.dumps(
+                        error_chunk,
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
                 )
  
-                yield "data: [DONE]\n\n"
+                yield (
+                    "data: [DONE]\n\n"
+                )
  
         return StreamingResponse(
             event_stream(),
-            media_type="text/event-stream",
+            media_type=(
+                "text/event-stream"
+            ),
         )
  
     answer, _ = await run_agent(
@@ -552,17 +648,23 @@ async def openai_chat_completions(
  
     return {
         "id": completion_id,
-        "object": "chat.completion",
+        "object":
+            "chat.completion",
         "created": created,
-        "model": AGENT_MODEL_ID,
+        "model":
+            AGENT_MODEL_ID,
         "choices": [
             {
                 "index": 0,
                 "message": {
-                    "role": "assistant",
-                    "content": answer,
+                    "role":
+                        "assistant",
+ 
+                    "content":
+                        answer,
                 },
-                "finish_reason": "stop",
+                "finish_reason":
+                    "stop",
             }
         ],
         "usage": {
@@ -579,17 +681,24 @@ async def debug_chat(
     request: Request,
 ):
  
-    answer, debug_messages = await run_agent(
-        request.app,
-        body.message,
+    answer, debug_messages = (
+        await run_agent(
+            request.app,
+            body.message,
+        )
     )
  
     return {
         "answer": answer,
-        "agent_model": AGENT_MODEL_ID,
+ 
+        "agent_model":
+            AGENT_MODEL_ID,
+ 
         "available_tools": [
             tool.name
             for tool in request.app.state.tools
         ],
-        "messages": debug_messages,
+ 
+        "messages":
+            debug_messages,
     }

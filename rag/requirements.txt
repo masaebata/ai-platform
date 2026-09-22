@@ -1,0 +1,4 @@
+fastmcp
+qdrant-client
+sentence-transformers
+pypdf
