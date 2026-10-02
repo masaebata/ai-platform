@@ -1,9 +1,13 @@
 model_list:
   - model_name: local-general
     litellm_params:
-      model: openai/qwen3:4b
-      api_base: http://192.168.11.129:11434/v1
-      api_key: ollama
+      model: ollama/qwen3-4b-wiz
+      api_base: http://192.168.11.129:11434
  
+  - model_name: local-llama
+    litellm_params:
+      model: ollama/llama3.2
+      api_base: http://192.168.11.129:11434
+      
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
